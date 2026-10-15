@@ -86,8 +86,11 @@ def check_ipa(path):
     return info["CFBundleShortVersionString"]
 
 
-def gh(*args, capture=False):
-    return subprocess.run(["gh", *args], check=True, text=True, capture_output=capture).stdout
+def gh(*args):
+    p = subprocess.run(["gh", *args], text=True, capture_output=True)
+    if p.returncode:
+        sys.exit(f"gh {' '.join(args)} failed:\n{p.stderr}")
+    return p.stdout
 
 
 def main():
@@ -100,12 +103,12 @@ def main():
     version = check_ipa(args.ipa)
     print(f"Decrypted YouTube {version}: OK")
 
-    makefile = gh("api", f"repos/{CONFIG['upstream']}/contents/Makefile", "-H", "Accept: application/vnd.github.raw", capture=True)
+    makefile = gh("api", f"repos/{CONFIG['upstream']}/contents/Makefile", "-H", "Accept: application/vnd.github.raw")
     target = re.search(r"^YOUTUBE_VERSION = (\S+)", makefile, re.M).group(1)
     if version != target:
         print(f"warning: upstream currently targets YouTube {target}, this IPA is {version}", file=sys.stderr)
 
-    drafts = json.loads(gh("api", f"repos/{args.repo}/releases", capture=True))
+    drafts = json.loads(gh("api", f"repos/{args.repo}/releases"))
     if not any(r["draft"] and r["tag_name"] == DRAFT_TAG for r in drafts):
         gh("release", "create", DRAFT_TAG, "-R", args.repo, "--draft", "--title", "Base IPAs (private)",
            "--notes", "Decrypted IPAs used as build input. Kept as a draft so it isn't public.")
