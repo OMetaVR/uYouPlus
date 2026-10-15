@@ -82,7 +82,13 @@ jobs:
 
       - name: Download base IPA
         run: |
-          gh release download base-ipas -R "$GITHUB_REPOSITORY" -p "YouTube_${{ steps.ver.outputs.youtube }}.ipa" -O main/YouTube.ipa
+          # gh release download doesn't reliably find draft releases, so go through the API.
+          NAME="YouTube_${{ steps.ver.outputs.youtube }}.ipa"
+          ID=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            -q ".[] | select(.draft and .tag_name == \"base-ipas\") | .assets[] | select(.name == \"$NAME\") | .id")
+          [ -n "$ID" ] || { echo "::error::$NAME not found in the base-ipas draft release"; exit 1; }
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/octet-stream" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/assets/$ID" -o main/YouTube.ipa
           cd main && unzip -q YouTube.ipa && rm YouTube.ipa
           ACTUAL=$(defaults read "$(pwd)/Payload/YouTube.app/Info" CFBundleShortVersionString)
           echo "Base IPA is YouTube $ACTUAL"

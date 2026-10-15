@@ -22,6 +22,7 @@ REPO = os.environ["GITHUB_REPOSITORY"]
 UPSTREAM = CONFIG["upstream"]
 DRAFT_TAG = "base-ipas"
 NEED_IPA_LABEL = "needs-ipa"
+BUILD_FAILED_LABEL = "build-failed"
 
 
 def gh(*args, check=True):
@@ -83,7 +84,8 @@ def main():
 
     if gh("api", f"repos/{REPO}/releases/tags/{tag}", check=False).returncode == 0:
         print(f"Already released {tag}")
-        close_issues(NEED_IPA_LABEL, f"Built and released as {tag}.")
+        for label in (NEED_IPA_LABEL, BUILD_FAILED_LABEL):
+            close_issues(label, f"Built and released as {tag}.")
         return
 
     runs = gh_json("run", "list", "-R", REPO, "-w", "build.yml", "-L", "20", "--json", "displayTitle,status,conclusion")
@@ -94,7 +96,8 @@ def main():
     if any(r["conclusion"] == "failure" for r in mine):
         ensure_issue(f"Build failed for {tag}",
                      f"The build for upstream `{tag}` failed, so the watcher won't retry it automatically.\n\n"
-                     f"Fix the cause, then re-run it: Actions → Build → Run workflow (upstream tag `{tag}`).")
+                     f"Fix the cause, then re-run it: Actions → Build → Run workflow (upstream tag `{tag}`).",
+                     label=BUILD_FAILED_LABEL)
         print(f"Previous build for {tag} failed; not retrying")
         return
 
