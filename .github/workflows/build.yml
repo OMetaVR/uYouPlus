@@ -250,6 +250,8 @@ jobs:
         continue-on-error: true
         run: |
           cd main
+          # Upstream renamed the tweak to uYouEnhanced but still ships the filter as uYouPlus.plist.
+          [ -f uYouEnhanced.plist ] || cp uYouPlus.plist uYouEnhanced.plist
           rm -rf packages .theos
           make package JAILBROKEN=1 THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
           rm -rf .theos
@@ -279,6 +281,12 @@ jobs:
 
           </details>
           EOF
-          gh release create "$TAG" out/* -R "$GITHUB_REPOSITORY" \
-            --title "uYouEnhanced $YT_VERSION (uYou ${{ steps.ver.outputs.uyou }})" \
-            --notes-file notes.md --target "$GITHUB_SHA"
+          TITLE="uYouEnhanced $YT_VERSION (uYou ${{ steps.ver.outputs.uyou }})"
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Re-run of an existing release: replace its files and notes.
+            gh release upload "$TAG" out/* -R "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --title "$TITLE" --notes-file notes.md
+          else
+            gh release create "$TAG" out/* -R "$GITHUB_REPOSITORY" \
+              --title "$TITLE" --notes-file notes.md --target "$GITHUB_SHA"
+          fi
