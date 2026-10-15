@@ -73,8 +73,8 @@ jobs:
         id: ver
         run: |
           YT="${{ inputs.youtube_version }}"
-          [ -n "$YT" ] || YT=$(sed -nE 's/^YOUTUBE_VERSION = (.+)/\1/p' main/Makefile)
-          UYOU=$(sed -nE 's/^UYOU_VERSION = (.+)/\1/p' main/Makefile)
+          [ -n "$YT" ] || YT=$(sed -nE 's/^YOUTUBE_VERSION = (.+)/\1/p' main/Makefile | tr -d '\r')
+          UYOU=$(sed -nE 's/^UYOU_VERSION = (.+)/\1/p' main/Makefile | tr -d '\r')
           echo "youtube=$YT" >> "$GITHUB_OUTPUT"
           echo "uyou=$UYOU" >> "$GITHUB_OUTPUT"
           echo "commit=$(git -C main rev-parse HEAD)" >> "$GITHUB_OUTPUT"
