@@ -197,10 +197,10 @@ jobs:
         run: |
           set -euo pipefail
           unzip -Z1 "$OUTNAME" | grep '\.appex/' | sed 's|^\(.*\.appex\)/.*|\1|' | sort -u > appex_list.txt || true
-          grep -v '/PlugIns/' appex_list.txt | while IFS= read -r d; do
+          { grep -v '/PlugIns/' appex_list.txt || true; } | while IFS= read -r d; do
             echo "Removing $d"; zip -q -d "$OUTNAME" "${d}/*" || true
           done
-          if unzip -Z1 "$OUTNAME" | grep -q '/SC_Info/'; then
+          if unzip -Z1 "$OUTNAME" | grep '/SC_Info/' >/dev/null; then
             zip -q -d "$OUTNAME" "Payload/*/SC_Info/*" "Payload/*/SC_Info" || true
           fi
 
