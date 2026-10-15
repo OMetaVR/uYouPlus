@@ -1,0 +1,24 @@
+name: Watch
+
+on:
+  schedule:
+    - cron: "41 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: watch
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check upstream and start a build if possible
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/watch.py

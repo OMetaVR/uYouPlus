@@ -1,0 +1,278 @@
+# Based on arichornlover/uYouEnhanced's buildapp.yml (originally by @ISnackable).
+# Builds upstream at a release tag against a decrypted YouTube IPA from the
+# "base-ipas" draft release, then publishes the IPA (+ jailbreak .debs).
+
+name: Build
+run-name: Build ${{ inputs.upstream_tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "uYouEnhanced release tag to build (e.g. v21.20.4-3.0.5)"
+        required: true
+        type: string
+      youtube_version:
+        description: "(Optional) Base IPA version to use; defaults to the version upstream targets"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: build-${{ inputs.upstream_tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    env:
+      THEOS: ${{ github.workspace }}/theos
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.upstream_tag }}
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v7
+        with:
+          path: pipeline
+
+      - name: Read config
+        id: cfg
+        run: |
+          C=pipeline/config.json
+          {
+            echo "upstream=$(jq -r .upstream $C)"
+            echo "sdk=$(jq -r .build.sdkVersion $C)"
+            echo "bundle_id=$(jq -r .build.bundleId $C)"
+            echo "app_name=$(jq -r .build.appName $C)"
+            echo "ytuhd=$(jq -r 'if .build.ytuhd then 1 else 0 end' $C)"
+            echo "sponsorblock=$(jq -r 'if .build.sponsorblock then 1 else 0 end' $C)"
+            echo "debs=$(jq -r .build.debs $C)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout upstream at ${{ inputs.upstream_tag }}
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ steps.cfg.outputs.upstream }}
+          ref: ${{ inputs.upstream_tag }}
+          path: main
+          submodules: recursive
+
+      - name: Apply local patches
+        run: |
+          shopt -s nullglob
+          for p in pipeline/patches/*.patch; do
+            echo "Applying $p"
+            git -C main apply --verbose "$GITHUB_WORKSPACE/$p"
+          done
+
+      - name: Read versions
+        id: ver
+        run: |
+          YT="${{ inputs.youtube_version }}"
+          [ -n "$YT" ] || YT=$(sed -nE 's/^YOUTUBE_VERSION = (.+)/\1/p' main/Makefile)
+          UYOU=$(sed -nE 's/^UYOU_VERSION = (.+)/\1/p' main/Makefile)
+          echo "youtube=$YT" >> "$GITHUB_OUTPUT"
+          echo "uyou=$UYOU" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git -C main rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "YouTube $YT, uYou $UYOU"
+
+      - name: Download base IPA
+        run: |
+          gh release download base-ipas -R "$GITHUB_REPOSITORY" -p "YouTube_${{ steps.ver.outputs.youtube }}.ipa" -O main/YouTube.ipa
+          cd main && unzip -q YouTube.ipa && rm YouTube.ipa
+          ACTUAL=$(defaults read "$(pwd)/Payload/YouTube.app/Info" CFBundleShortVersionString)
+          echo "Base IPA is YouTube $ACTUAL"
+          echo "YT_VERSION=$ACTUAL" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: |
+          brew install ldid dpkg make wget unzip jq pipx meson ninja gnu-sed autoconf automake libtool pkgconf pngquant
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Setup Theos
+        uses: actions/checkout@v7
+        with:
+          repository: theos/theos
+          ref: master
+          path: theos
+          submodules: recursive
+
+      - name: SDK cache
+        id: sdk
+        uses: actions/cache@v6
+        with:
+          path: theos/sdks/
+          key: iOS-${{ steps.cfg.outputs.sdk }}-SDK
+
+      - name: Download iOS SDK
+        if: steps.sdk.outputs.cache-hit != 'true'
+        run: |
+          git clone --quiet -n --depth=1 --filter=tree:0 https://github.com/aricloverALT/sdks/ sdks
+          cd sdks
+          git sparse-checkout set --no-cone iPhoneOS${{ steps.cfg.outputs.sdk }}.sdk
+          git checkout --quiet
+          mv *.sdk "$THEOS/sdks"
+
+      - name: Setup Theos Jailed
+        uses: actions/checkout@v7
+        with:
+          repository: qnblackcat/theos-jailed
+          ref: master
+          path: theos-jailed
+
+      - name: Install Theos Jailed
+        run: ./theos-jailed/install
+
+      - name: Fix Theos broken pipe issue
+        run: |
+          grep -rlE '\| head' "$THEOS" --include='*.sh' --include='*.mk' | while read -r f; do
+            sed -i '' 's/| head/2>\/dev\/null | head/g' "$f"
+          done
+
+      - name: Install cyan and tbd
+        run: |
+          pipx install https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+          wget --quiet "https://github.com/inoahdev/tbd/releases/download/2.2/tbd-mac" -O /usr/local/bin/tbd
+          chmod +x /usr/local/bin/tbd
+
+      - name: Restore FFmpegKit cache
+        id: ffmpeg_cache
+        uses: actions/cache/restore@v6
+        with:
+          path: main/modules/ffmpeg
+          key: ffmpegkit-${{ runner.os }}-${{ hashFiles('main/tools/fetch-ffmpegkit.sh', 'main/Tools/fetch-ffmpegkit.sh') }}
+
+      - name: Build FFmpegKit from source (first run takes 30-90 min)
+        if: steps.ffmpeg_cache.outputs.cache-hit != 'true'
+        run: cd main && bash tools/fetch-ffmpegkit.sh
+
+      - name: Save FFmpegKit cache
+        if: steps.ffmpeg_cache.outputs.cache-hit != 'true' && hashFiles('main/modules/ffmpeg/**') != ''
+        uses: actions/cache/save@v6
+        with:
+          path: main/modules/ffmpeg
+          key: ${{ steps.ffmpeg_cache.outputs.cache-primary-key }}
+
+      - name: Build package
+        id: build_package
+        env:
+          UYOU_VERSION: ${{ steps.ver.outputs.uyou }}
+        run: |
+          cd main
+          sed -i '' "s/^BUNDLE_ID .*/BUNDLE_ID = ${{ steps.cfg.outputs.bundle_id }}/" Makefile
+          sed -i '' "s/^DISPLAY_NAME .*/DISPLAY_NAME = ${{ steps.cfg.outputs.app_name }}/" Makefile
+          sed -i '' "s/^export TARGET .*/export TARGET = iphone:clang:${{ steps.cfg.outputs.sdk }}:15.0/" Makefile
+          make package THEOS_PACKAGE_SCHEME=rootless IPA=Payload/YouTube.app FINALPACKAGE=1 \
+            YTUHD_ENABLED=${{ steps.cfg.outputs.ytuhd }} SPONSORBLOCK_ENABLED=${{ steps.cfg.outputs.sponsorblock }}
+          echo "package=$(ls -t packages | head -n1)" >> "$GITHUB_OUTPUT"
+
+      - name: Clone Open in YouTube (Safari extension)
+        run: |
+          git clone --quiet -n --depth=1 --filter=tree:0 https://github.com/BillyCurtis/OpenYouTubeSafariExtension.git OpenYouTubeSafariExtension
+          cd OpenYouTubeSafariExtension
+          git sparse-checkout set --no-cone OpenYouTubeSafariExtension.appex
+          git checkout --quiet
+          mv *.appex ..
+
+      - name: Inject tweaks into IPA
+        run: |
+          OUTNAME="uYouEnhanced_${YT_VERSION}_v${{ steps.ver.outputs.uyou }}.ipa"
+          echo "OUTNAME=$OUTNAME" >> "$GITHUB_ENV"
+          tweaks="OpenYouTubeSafariExtension.appex"
+          for f in main/packages/*.deb; do [ -f "$f" ] && tweaks="$tweaks $f"; done
+          cyan -i "main/packages/${{ steps.build_package.outputs.package }}" -o "$OUTNAME" -uwef $tweaks \
+            -n "${{ steps.cfg.outputs.app_name }}" -b "${{ steps.cfg.outputs.bundle_id }}"
+
+      - name: Strip unresignable extensions
+        run: |
+          set -euo pipefail
+          unzip -Z1 "$OUTNAME" | grep '\.appex/' | sed 's|^\(.*\.appex\)/.*|\1|' | sort -u > appex_list.txt || true
+          grep -v '/PlugIns/' appex_list.txt | while IFS= read -r d; do
+            echo "Removing $d"; zip -q -d "$OUTNAME" "${d}/*" || true
+          done
+          if unzip -Z1 "$OUTNAME" | grep -q '/SC_Info/'; then
+            zip -q -d "$OUTNAME" "Payload/*/SC_Info/*" "Payload/*/SC_Info" || true
+          fi
+
+      - name: Register alternate app icons
+        run: |
+          set -euo pipefail
+          rm -rf iconwork && mkdir -p iconwork/icons && cd iconwork
+          PLIST="Payload/YouTube.app/Info.plist"
+          unzip -q "../$OUTNAME" "$PLIST"
+          for f in ../main/Localizations/uYouPlus.bundle/AppIcons/*.png; do
+            name="$(basename "$f")"
+            pngquant --quality=80-95 --strip --skip-if-larger "$f" --output "icons/$name" >/dev/null 2>&1 || true
+            [ -f "icons/$name" ] || cp -f "$f" "icons/$name"
+          done
+          for f in icons/*.png; do
+            SPEC="$(sips -g pixelWidth -g pixelHeight -g hasAlpha "$f" 2>/dev/null | awk '/pixelWidth/{w=$2} /pixelHeight/{h=$2} /hasAlpha/{a=$2} END{print w"x"h" alpha="a}')"
+            case "$SPEC" in
+              "1024x1024 alpha=no"*) ;;
+              *) echo "::error::$(basename "$f") is $SPEC; app icons must be 1024x1024 opaque PNGs"; exit 1 ;;
+            esac
+          done
+          PB=/usr/libexec/PlistBuddy
+          for ROOT in CFBundleIcons "CFBundleIcons~ipad"; do
+            $PB -c "Add :$ROOT dict" "$PLIST" 2>/dev/null || true
+            $PB -c "Add :$ROOT:CFBundleAlternateIcons dict" "$PLIST" 2>/dev/null || true
+          done
+          for f in icons/*.png; do
+            NAME="$(basename "$f" .png)"
+            cp -f "$f" "Payload/YouTube.app/$NAME.png"
+            for ROOT in CFBundleIcons "CFBundleIcons~ipad"; do
+              $PB -c "Add :$ROOT:CFBundleAlternateIcons:$NAME dict" "$PLIST" 2>/dev/null || true
+              $PB -c "Add :$ROOT:CFBundleAlternateIcons:$NAME:CFBundleIconFiles array" "$PLIST" 2>/dev/null || true
+              $PB -c "Add :$ROOT:CFBundleAlternateIcons:$NAME:CFBundleIconFiles:0 string $NAME" "$PLIST" 2>/dev/null || true
+            done
+          done
+          zip -q "../$OUTNAME" "$PLIST" Payload/YouTube.app/*.png
+          cd .. && rm -rf iconwork
+
+      - name: Collect IPA
+        run: |
+          mkdir -p out
+          mv "$OUTNAME" out/
+          shasum -a 256 out/*.ipa
+
+      - name: Build jailbreak packages
+        if: steps.cfg.outputs.debs == 'true'
+        continue-on-error: true
+        run: |
+          cd main
+          rm -rf packages .theos
+          make package JAILBROKEN=1 THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
+          rm -rf .theos
+          make package JAILBROKEN=1 FINALPACKAGE=1
+          cp packages/*.deb ../out/
+          ls -l ../out
+
+      - name: Publish release
+        run: |
+          UPSTREAM_NOTES=$(gh release view "$TAG" -R "${{ steps.cfg.outputs.upstream }}" --json body -q .body || true)
+          cat > notes.md <<EOF
+          uYouEnhanced built from [\`$TAG\`](https://github.com/${{ steps.cfg.outputs.upstream }}/releases/tag/$TAG) (\`${{ steps.ver.outputs.commit }}\`) with **YouTube $YT_VERSION** and uYou ${{ steps.ver.outputs.uyou }}.
+
+          | File | For |
+          | --- | --- |
+          | \`$OUTNAME\` | SideStore, AltStore, LiveContainer, TrollStore, Sideloadly |
+          | \`*_iphoneos-arm64.deb\` | Rootless jailbreak (needs uYou \`com.miro.uyou\` installed) |
+          | \`*_iphoneos-arm.deb\` | Rootful jailbreak (needs uYou \`com.miro.uyou\` installed) |
+
+          Also available through the [Meta's Apps source](https://ometavr.github.io/ipa-source/source.json).
+
+          ---
+
+          <details><summary>Upstream release notes</summary>
+
+          $UPSTREAM_NOTES
+
+          </details>
+          EOF
+          gh release create "$TAG" out/* -R "$GITHUB_REPOSITORY" \
+            --title "uYouEnhanced $YT_VERSION (uYou ${{ steps.ver.outputs.uyou }})" \
+            --notes-file notes.md --target "$GITHUB_SHA"

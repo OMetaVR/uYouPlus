@@ -1,0 +1,14 @@
+{
+  "upstream": "arichornlover/uYouEnhanced",
+  "upstreamWorkflowSha256": "bb4f7d5467c35c88a4bb67a71f0119f64e16702c506202ac7f52ea543035ca44",
+  "baseBundleId": "com.google.ios.youtube",
+  "appStoreId": 544007664,
+  "build": {
+    "sdkVersion": "26.5",
+    "bundleId": "com.google.ios.youtube",
+    "appName": "YouTube",
+    "ytuhd": false,
+    "sponsorblock": false,
+    "debs": true
+  }
+}
