@@ -1,3 +1,5 @@
+> **Archived.** This pipeline moved to [OMetaVR/uYouEnhanced](https://github.com/OMetaVR/uYouEnhanced), a fork built by the shared [ipa-pipeline](https://github.com/OMetaVR/ipa-pipeline). Old releases stay here.
+
 # uYouPlus builds
 
 Automatic builds of [uYouEnhanced](https://github.com/arichornlover/uYouEnhanced), the maintained continuation of qnblackcat's (archived) uYouPlus, for:
